@@ -642,7 +642,7 @@ class MeanAveragePrecision(Metric):
             thr:
                 Current threshold value.
             gt_matches:
-                Tensor showing if a ground truth matches for threshold ``t`` exists.
+                Tensor showing if a ground truth matches for threshold ``thr`` exists.
             gt_ignore:
                 Tensor showing if ground truth should be ignored.
             ious:
@@ -817,6 +817,17 @@ class MeanAveragePrecision(Metric):
 
         det_scores = torch.cat([e["dtScores"][:max_det] for e in img_eval_cls_bbox])
 
+        gt_ignore = torch.cat([e["gtIgnore"] for e in img_eval_cls_bbox])
+        npig = torch.count_nonzero(gt_ignore == False)  # noqa: E712
+        if npig == 0:
+            # TODO(dhananjai): Confirm that a class entering this function
+            # would definitely have detections. If yes, mark Precision as 0.
+            precision[:, :, idx_cls, idx_bbox_area, idx_max_det_thrs] = 0.
+
+            # TODO(dhananjai): Confirm that Recall will stay -1 to convey that
+            # it is undefined as there were no valid GT.
+            return recall, precision, scores
+
         # different sorting method generates slightly different results.
         # mergesort is used to be consistent as Matlab implementation.
         # Sort in PyTorch does not support bool types on CUDA (yet, 1.11.0)
@@ -824,13 +835,9 @@ class MeanAveragePrecision(Metric):
         # Explicitly cast to uint8 to avoid error for bool inputs on CUDA to argsort
         inds = torch.argsort(det_scores.to(dtype), descending=True)
         det_scores_sorted = det_scores[inds]
-
         det_matches = torch.cat([e["dtMatches"][:, :max_det] for e in img_eval_cls_bbox], axis=1)[:, inds]
         det_ignore = torch.cat([e["dtIgnore"][:, :max_det] for e in img_eval_cls_bbox], axis=1)[:, inds]
-        gt_ignore = torch.cat([e["gtIgnore"] for e in img_eval_cls_bbox])
-        npig = torch.count_nonzero(gt_ignore == False)  # noqa: E712
-        if npig == 0:
-            return recall, precision, scores
+
         tps = torch.logical_and(det_matches, torch.logical_not(det_ignore))
         fps = torch.logical_and(torch.logical_not(det_matches), torch.logical_not(det_ignore))
 
