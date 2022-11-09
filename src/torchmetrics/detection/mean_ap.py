@@ -13,9 +13,6 @@
 # limitations under the License.
 import logging
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-import sys
-
-sys.path.append("/Users/dhananjaisharma/projects/metrics/src")
 
 import numpy as np
 import torch
@@ -728,19 +725,6 @@ class MeanAveragePrecision(Metric):
             for img_id in img_ids
         ]
 
-        """
-        First entry in `eval_imgs` for each class.
-
-        (Pdb) eval_imgs[0 * len(img_ids) * len(area_ranges)]
-        {'dtMatches': tensor([[True]]), 'gtMatches': tensor([[True]]), 'dtScores': tensor([0.6000]), 'gtIgnore': tensor([False]), 'dtIgnore': tensor([[False]])}
-        (Pdb) eval_imgs[1 * len(img_ids) * len(area_ranges)]
-        {'dtMatches': tensor([[True]]), 'gtMatches': tensor([[True]]), 'dtScores': tensor([0.6000]), 'gtIgnore': tensor([False]), 'dtIgnore': tensor([[False]])}
-        (Pdb) eval_imgs[2 * len(img_ids) * len(area_ranges)]
-        {'dtMatches': tensor([[False]]), 'gtMatches': tensor([], size=(1, 0), dtype=torch.bool), 'dtScores': tensor([0.6000]), 'gtIgnore': tensor([], dtype=torch.bool), 'dtIgnore': tensor([[False]])}
-        (Pdb) eval_imgs[3 * len(img_ids) * len(area_ranges)]
-        {'dtMatches': tensor([[False]]), 'gtMatches': tensor([], size=(1, 0), dtype=torch.bool), 'dtScores': tensor([0.6000]), 'gtIgnore': tensor([], dtype=torch.bool), 'dtIgnore': tensor([[False]])}
-        """
-
         nb_iou_thrs = len(self.iou_thresholds)
         nb_rec_thrs = len(self.rec_thresholds)
         nb_classes = len(class_ids)
@@ -833,6 +817,17 @@ class MeanAveragePrecision(Metric):
 
         det_scores = torch.cat([e["dtScores"][:max_det] for e in img_eval_cls_bbox])
 
+        gt_ignore = torch.cat([e["gtIgnore"] for e in img_eval_cls_bbox])
+        npig = torch.count_nonzero(gt_ignore == False)  # noqa: E712
+        if npig == 0:
+            # TODO(dhananjai): Confirm that a class entering this function
+            # would definitely have detections. If yes, mark Precision as 0.
+            precision[:, :, idx_cls, idx_bbox_area, idx_max_det_thrs] = 0.
+
+            # TODO(dhananjai): Confirm that Recall will stay -1 to convey that
+            # it is undefined as there were no valid GT.
+            return recall, precision, scores
+
         # different sorting method generates slightly different results.
         # mergesort is used to be consistent as Matlab implementation.
         # Sort in PyTorch does not support bool types on CUDA (yet, 1.11.0)
@@ -840,31 +835,9 @@ class MeanAveragePrecision(Metric):
         # Explicitly cast to uint8 to avoid error for bool inputs on CUDA to argsort
         inds = torch.argsort(det_scores.to(dtype), descending=True)
         det_scores_sorted = det_scores[inds]
-
-        # TODO: Move this code earlier than det_scores.
-        gt_ignore = torch.cat([e["gtIgnore"] for e in img_eval_cls_bbox])
-        npig = torch.count_nonzero(gt_ignore == False)  # noqa: E712
-        if npig == 0:
-            # TODO: Need to find a proper way to assign something here.
-            there_are_predictions = True
-
-            # If there are predictions made for this class, then mark precision
-            # as 0. Otherwise, keep it 1.
-            if there_are_predictions:
-                # TODO: Unsure about what to put in the first index.
-                precision[:, :, idx_cls, idx_bbox_area, idx_max_det_thrs] = 0.
-            else:
-                # TODO: Unsure about what to put in the first index.
-                precision[:, :, idx_cls, idx_bbox_area, idx_max_det_thrs] = 1.
-
-            # TODO: Handle recall as well.
-            # Since there is no GT, the Recall will also become zero. We can
-            # also keep it as -1 to convey that it is an undefined value.
-
-            return recall, precision, scores
-
         det_matches = torch.cat([e["dtMatches"][:, :max_det] for e in img_eval_cls_bbox], axis=1)[:, inds]
         det_ignore = torch.cat([e["dtIgnore"][:, :max_det] for e in img_eval_cls_bbox], axis=1)[:, inds]
+
         tps = torch.logical_and(det_matches, torch.logical_not(det_ignore))
         fps = torch.logical_and(torch.logical_not(det_matches), torch.logical_not(det_ignore))
 
@@ -953,29 +926,3 @@ class MeanAveragePrecision(Metric):
         metrics[f"mar_{self.max_detection_thresholds[-1]}_per_class"] = mar_max_dets_per_class_values
 
         return metrics
-
-
-if __name__ == "__main__":
-    metric = MeanAveragePrecision(iou_thresholds=[0.5], class_metrics=True)
-    preds = [
-        dict(
-            boxes=torch.Tensor([[0, 0, 20, 20],  # TP for class 0
-                                [30, 30, 50, 50],  # TP for class 1
-                                [70, 70, 90, 90],  # FP for class 2
-                                [100, 100, 120, 120]]),  # FP for class 3
-            scores=torch.Tensor([0.6, 0.6, 0.6, 0.6]),
-            labels=torch.IntTensor([0, 1, 2, 3]),
-        )
-    ]
-
-    targets = [
-        dict(
-            boxes=torch.Tensor([[0, 0, 20, 20],
-                                [30, 30, 50, 50]]),
-            labels=torch.IntTensor([0, 1]),
-        )
-    ]
-    metric.update(preds, targets)
-
-    from pprint import pprint
-    pprint(metric.compute())
